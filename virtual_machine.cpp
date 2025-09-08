@@ -5,7 +5,9 @@
  * reference: https://dangrie158.github.io/SAP-1/isa.html
  */
 
-#define M_HLT   0x0001 // HALT CLOCK
+#include <stdint.h>
+
+#define M_HLT   0x0001 // HALT clock_unit
 #define M_MI    0x0002 // MEMORY ADDRESS IN
 #define M_RO    0x0004 // RAM OUT
 #define M_RI    0x0008 // RAM IN
@@ -55,10 +57,9 @@ uint8_t memory[16] = {
 /*0x0F*/    0b00000001,
 };
 uint8_t registers[2];
-uint8_t program_counter = 0;
+uint8_t pc = 0;
 uint8_t ir = 0;
 uint8_t mar = 0;
-uint8_t operand = 0;
 uint8_t alu_result = 0;
 uint8_t bus = 0;
 uint8_t micro_instruction_counter = 0;
@@ -68,9 +69,13 @@ uint16_t control_word = 0x0;
 uint8_t flag_carry = 0;
 uint8_t flag_zero = 0;
 
-void microcode_fetch();
-void microcode_execute();
-void ram_module();
+uint8_t microcode_fetch();
+uint8_t microcode_execute();
+void out_to_bus();
+void in_from_bus();
+void clock_unit();
+void alu();
+void shift_register();
 
 
 // This is the microcode LUT, usually implemented as a ROM
@@ -88,16 +93,16 @@ uint8_t microcode_fetch() {
             break;
         case 2:
             switch (opcode) {
-                case: OC_LDA:
-                case: OC_ADD:
-                case: OC_SUB:
-                case: OC_STA:
+                case OC_LDA:
+                case OC_ADD:
+                case OC_SUB:
+                case OC_STA:
                     control_word = M_IO | M_MI;
                     break;
                 case OC_LDI:
                     control_word = M_IO | M_AI;
                     break;
-                case: OC_JMP:
+                case OC_JMP:
                     control_word = M_IO | M_JP;
                     break;
                 case OC_JC:
@@ -157,10 +162,10 @@ uint8_t microcode_execute() {
     microcode_fetch();
     micro_instruction_counter++;
 
-    ram_module();
-    clock();
-    control();
     alu();
+    clock_unit();
+    out_to_bus();
+    in_from_bus();
 
     if (control_word & M_HLT) {
         return 1;
@@ -168,7 +173,25 @@ uint8_t microcode_execute() {
     return 0;
 }
 
-void ram_module() {
+void out_to_bus() {
+    if (control_word & M_RO) {
+        bus = memory[mar];
+    }
+    if (control_word & M_AO) {
+        bus = registers[0];
+    }
+    if (control_word & M_IO) {
+        bus = ir & 0x0F;
+    }
+    if (control_word & M_CO) {
+        bus = 0x0F & pc;
+    }
+    if (control_word & M_EO) {
+        bus = alu_result;
+    }
+}
+
+void in_from_bus() {
     // Memory
     if (control_word & M_MI) {
         mar = bus;
@@ -176,15 +199,9 @@ void ram_module() {
     if (control_word & M_RI) {
         memory[mar] = bus;
     }
-    if (control_word & M_RO) {
-        bus = memory[mar];
-    }
     // Registers
     if (control_word & M_AI) {
         registers[0] = bus;
-    }
-    if (control_word & M_AO) {
-        bus = registers[0];
     }
     if (control_word & M_BI) {
         registers[1] = bus;
@@ -192,45 +209,66 @@ void ram_module() {
     if (control_word & M_II) {
         ir = bus;
     }
-    if (control_word & M_IO) {
-        bus = ir & 0x0F;
+    if (control_word & M_JP) {
+        pc = bus;
     }
 }
 
-void clock() {
+void clock_unit() {
     if (control_word & M_CE) {
-        program_counter++;
-        program_counter &= 0x0F;
-    }
-    if (control_word & M_JP) {
-        program_counter = bus;
+        pc++;
+        pc &= 0x0F;
     }
 }
 
-void control() {
-    if (control_word & M_CO) {
-        bus = 0x0F & program_counter;
-    }
-    if (control_word & M_JP) {
-        program_counter = bus;
-    }
-}
 
 void alu() {
+    // Circuitry that's always on
     uint8_t carry = 0;
     uint8_t zero = 0;
-    if (control_word & M_EO) {
-        if (control_word & M_SU) {
-            carry = registers[0] < registers[1];
-            alu_result = registers[0] - registers[1];
-        } else {
-            carry = registers[0] > registers[1];
-            alu_result = registers[0] + registers[1];
-        }
-        zero = alu_result == 0;
+    if (control_word & M_SU) {
+        carry = registers[0] < registers[1];
+        alu_result = registers[0] - registers[1];
+    } else {
+        carry = registers[0] > registers[1];
+        alu_result = registers[0] + registers[1];
     }
+    zero = alu_result == 0;
+
     if (control_word & M_FI) {
         flag_carry = carry;
         flag_zero = zero;
     }
+}
+
+uint8_t latchPin = 0;
+uint8_t dataPin = 0;
+uint8_t clockPin = 0;
+uint8_t MSBFIRST = 0;
+void digitalWrite(uint8_t pin, uint8_t value) {}
+void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t value) {}
+void shift_register() {
+    // 76 LEDs needed on PCB for registers, bus, flags
+    digitalWrite(latchPin, 0);
+    // Control Word:
+    shiftOut(dataPin, clockPin, MSBFIRST, (control_word >> 8) & 0xFF);
+    shiftOut(dataPin, clockPin, MSBFIRST, (control_word >> 0) & 0xFF);
+    // Register A:
+    shiftOut(dataPin, clockPin, MSBFIRST, registers[0]);
+    // Register B:
+    shiftOut(dataPin, clockPin, MSBFIRST, registers[1]);
+    // Program Counter:
+    shiftOut(dataPin, clockPin, MSBFIRST, pc);
+    // Instruction Register:
+    shiftOut(dataPin, clockPin, MSBFIRST, ir);
+    // Memory Address Register:
+    shiftOut(dataPin, clockPin, MSBFIRST, mar);
+    // ALU Result:
+    shiftOut(dataPin, clockPin, MSBFIRST, alu_result);
+    // Bus:
+    shiftOut(dataPin, clockPin, MSBFIRST, bus);
+    // Flags:
+    uint8_t flag_and_micro_instruction_counter = flag_zero | flag_carry << 1 | (1 << 2 << micro_instruction_counter);
+    shiftOut(dataPin, clockPin, MSBFIRST, flag_and_micro_instruction_counter);
+    digitalWrite(latchPin, 1);
 }
